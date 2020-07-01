@@ -1,0 +1,6 @@
+[program]
+backup-base-dir = "./backup"
+
+[backup.config]
+name = "mysql"
+paths = ["/etc/mysql/my.cnf.d", "$HOME/my.cnf"]
