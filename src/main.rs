@@ -9,6 +9,11 @@ use std::process::*;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
+extern crate scheduled_thread_pool;
+
+use scheduled_thread_pool::JobHandle;
+use scheduled_thread_pool::ScheduledThreadPool;
+
 fn main() {
     // println!("Hello, world!");
     // let backup_base_path = Path::new("/home/navyd/tmp/.backup");
@@ -43,12 +48,18 @@ fn main() {
 
 pub struct BackupServer {
     backup_context: Arc<BackupContext>,
+    scheduler: Arc<ScheduledThreadPool>,
+    scheduler_jobs: Arc<HashMap<PathBuf, JobHandle>>,
+    commit_duration: Duration,
 }
 
 impl BackupServer {
     pub fn new(context: BackupContext) -> Self {
         BackupServer {
             backup_context: Arc::new(context),
+            scheduler: Arc::new(ScheduledThreadPool::new(1)),
+            scheduler_jobs: Arc::new(HashMap::new()),
+            commit_duration: Duration::from_secs(10),
         }
     }
 
@@ -59,6 +70,9 @@ impl BackupServer {
     pub fn start(&self) {
         let context = Arc::clone(&self.backup_context);
         let config = Arc::clone(&self.backup_context.configurations);
+        let jobs = Arc::clone(&self.scheduler_jobs);
+        let commit_duration = self.commit_duration.clone();
+        let scheduler = Arc::clone(&self.scheduler);
         thread::spawn(move || {
             let (tx, rx) = channel();
             let mut watcher = watcher(tx, Duration::from_secs(3)).expect("watcher start failed");
@@ -76,10 +90,24 @@ impl BackupServer {
                             notify::DebouncedEvent::Create(b)
                             | notify::DebouncedEvent::Write(b)
                             | notify::DebouncedEvent::Remove(b) => {
+                                let path_str = b.to_str().unwrap().to_owned();
                                 if let Err(e) = context.hold(b.as_path()) {
                                     eprintln!("config hold error: {}", e);
                                 } else {
-                                    println!("{} 已复制", b.to_str().unwrap());
+                                    println!("{} 已复制", path_str);
+                                    if let Some(job) = jobs.get(&b) {
+                                        job.cancel();
+                                        println!("path: {} 之前的计时已取消", path_str);
+                                    }
+                                    let context = context.clone();
+                                    scheduler.execute_after(commit_duration, move || {
+                                        if let Err(e) = context.commit(b.as_path()) {
+                                            eprintln!("commit error: {}", e);
+                                        } else {
+                                            println!("commited path: {}", b.to_str().unwrap());
+                                        }
+                                    });
+                                    println!("已提交定时任务 path: {}", path_str);
                                 }
                             }
                             _ => {}
@@ -88,7 +116,7 @@ impl BackupServer {
                     Err(e) => println!("watch error: {:?}", e),
                 }
             }
-        });        
+        });
     }
 }
 
@@ -122,14 +150,13 @@ impl BackupContext {
     pub fn commit(&self, path: &Path) -> io::Result<()> {
         Command::new("git")
             .arg("add")
-            .arg(path)
+            .arg(".")
             .current_dir(self.backup_base_path.as_path())
             .stdout(Stdio::inherit())
             .spawn()
             .and_then(|mut child| child.wait())?;
         Command::new("git")
             .arg("commit")
-            .arg(path)
             .args(("-m 'commit_'").split(" "))
             .current_dir(self.backup_base_path.as_path())
             .stdout(Stdio::inherit())
@@ -230,5 +257,32 @@ impl PackageManager {
                 }),
             _ => panic!("unsupported!"),
         }
+    }
+}
+
+fn exec(command: &str) -> io::Result<()> {
+    let comm: Vec<&str> = command.split(' ').collect();
+    Command::new(comm.get(0).expect(command))
+        .args(comm.get(1..).expect(command))
+        .spawn()
+        .and_then(|mut child| child.wait())
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("status: {}", status.code().unwrap().to_string()),
+                ))
+            }
+        })
+}
+
+struct RustProgram {}
+
+impl RustProgram {
+    pub fn install() {
+        // openssl-sys build error
+        let prepending = "libssl-dev pkg-config";
     }
 }

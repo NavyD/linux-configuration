@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 notify = "4.0"
+scheduled-thread-pool = "0.2.5"
