@@ -209,7 +209,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 #[allow(unused)]
-enum PackageManager {
+pub enum PackageManager {
     AptGet,
     Pacman,
     Other,
@@ -219,7 +219,8 @@ enum PackageManager {
 impl PackageManager {
     pub fn install(&self, name: &str) -> io::Result<()> {
         match self {
-            AptGet => Command::new("apt-get")
+            AptGet => Command::new("sudo")
+                .arg("apt-get")
                 .arg("install")
                 .arg(name)
                 .spawn()?
@@ -258,6 +259,10 @@ impl PackageManager {
             _ => panic!("unsupported!"),
         }
     }
+
+    pub fn uninstall(&self, name: &str) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn exec(command: &str) -> io::Result<()> {
@@ -278,11 +283,105 @@ fn exec(command: &str) -> io::Result<()> {
         })
 }
 
-struct RustProgram {}
+/// -----------
+
+pub trait Program {
+    fn get_name(&self) -> &str;
+
+    fn get_package_manager(&self) -> &PackageManager;
+
+    fn install(&self) -> io::Result<()> {
+        if self.exists() {
+            Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} 已安装", self.get_name())))
+        } else {
+            self.get_package_manager().install(self.get_name())
+        }
+    }
+
+    fn uninstall(&self) -> io::Result<()> {
+        self.get_package_manager().uninstall(self.get_name())
+    }
+
+    fn config(&self) -> io::Result<()>;
+
+    /// 通过sh command -v $name验证
+    fn exists(&self) -> bool {
+        Command::new("sh")
+            .arg("-c")
+            .arg("command")
+            .arg("-v")
+            .arg(self.get_name())
+            .spawn()
+            .and_then(|mut child| child.wait())
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+struct RustProgram {
+    name: String,
+}
 
 impl RustProgram {
     pub fn install() {
         // openssl-sys build error
         let prepending = "libssl-dev pkg-config";
+    }
+}
+
+pub struct ZshProgram {
+    name: String,
+    configurations: HashMap<PathBuf, RecursiveMode>,
+    pm: PackageManager,
+}
+
+impl ZshProgram {
+    pub fn new(configurations: HashMap<PathBuf, RecursiveMode>) -> Self {
+        ZshProgram {
+            name: "zsh".to_string(),
+            configurations,
+            pm: PackageManager::AptGet,
+        }
+    }
+}
+
+impl Program for ZshProgram {
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    fn get_package_manager(&self) -> &PackageManager {
+        &self.pm
+    }
+
+    fn config(&self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zsh_exists() {
+        let zsh_exists = Command::new("zsh")
+            .arg("--version")
+            .spawn()
+            .and_then(|mut child| child.wait())
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert_eq!(ZshProgram::new(HashMap::new()).exists(), zsh_exists);
+    }
+
+    #[test]
+    fn zsh_install() {
+        let zsh = ZshProgram::new(HashMap::new());
+        let res = zsh.install();
+        if zsh.exists() {
+            assert!(res.is_err());
+        } else {
+            assert!(res.is_ok())
+        }
     }
 }
