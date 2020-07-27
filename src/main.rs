@@ -1,4 +1,5 @@
 extern crate notify;
+mod configuration;
 
 use notify::{watcher, RecursiveMode, Watcher};
 use std::fs::*;
